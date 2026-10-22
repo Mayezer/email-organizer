@@ -1,0 +1,15 @@
+# Credenciais
+credentials.json
+tokens/
+.env
+.env.*
+!.env.example
+
+# Gradle / Java
+.gradle/
+build/
+bin/
+*.log
+
+# VSCode
+.vscode/
