@@ -5,7 +5,13 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
 import com.google.api.services.gmail.model.MessagePart;
 import com.google.api.services.gmail.model.MessagePartBody;
@@ -21,6 +27,30 @@ public class EmailBodyExtractor {
                 textDecoded = new String(decodeFunction, StandardCharsets.UTF_8);
             }
         return textDecoded;
+    }
+
+    private String convertHtmlToText(String html) {
+        Document document = Jsoup.parse(html);
+        Elements links = document.select("a[href]");
+        for (Element link : links) {
+            String label = link.text();
+            String url = link.attr("href");
+            if (url != null && !url.isBlank()) {
+                    String linkDescription = label + ": " + url;
+                    link.text(linkDescription);
+            }
+        }
+        String text = document.text();
+        return text;
+    }
+
+    private String convertHtmlParts(List<String> htmlParts) {
+        List<String> convertedHtmlParts = new ArrayList<>();
+        for (String htmlPart : htmlParts) {
+            htmlPart = convertHtmlToText(htmlPart);
+            convertedHtmlParts.add(htmlPart);
+        }
+        return String.join("\n\n", convertedHtmlParts);
     }
 
     private void collectBodies(MessagePart part, Map<String, List<String>> bodies) {
@@ -52,7 +82,7 @@ public class EmailBodyExtractor {
 
         String mimeType = part.getMimeType();
         List<MessagePart> parts = part.getParts();
-        if (parts != null && !parts.isEmpty()) { 
+        if (parts != null && !parts.isEmpty()) {
             for (MessagePart childPart : parts) { // Recursividade com for
                 collectBodies((childPart), bodies);
             }
@@ -60,12 +90,12 @@ public class EmailBodyExtractor {
 
         if ("text/plain".equalsIgnoreCase(mimeType)
             || "text/html".equalsIgnoreCase(mimeType)
-            || "text/x-amp-html".equalsIgnoreCase(mimeType)) {   
+            || "text/x-amp-html".equalsIgnoreCase(mimeType)) {
             MessagePartBody partBody = part.getBody();
             if (partBody != null) {
                 partBodyString = decodeBody(partBody.getData());
                 if (partBodyString != null) {
-                    bodies.computeIfAbsent(mimeType, key -> new ArrayList<>())
+                    bodies.computeIfAbsent(mimeType.toLowerCase(Locale.ROOT), key -> new ArrayList<>())
                         .add(partBodyString);
                 }
             }
@@ -78,15 +108,33 @@ public class EmailBodyExtractor {
 
         List<String> plainParts = bodies.getOrDefault("text/plain", List.of());
         String plainText = String.join("\n\n", plainParts);
+
         List<String> htmlParts = bodies.getOrDefault("text/html", List.of());
         String htmlText = String.join("\n\n", htmlParts);
+        String htmlTextConverted = convertHtmlParts(htmlParts);
+
         List<String> ampHtmlParts = bodies.getOrDefault("text/x-amp-html", List.of());
         String ampHtmlText = String.join("\n\n", ampHtmlParts);
+        String ampHtmlTextConverted = convertHtmlParts(ampHtmlParts);
+
+        List<String> textAnalysis = new ArrayList<>();
+        if (plainText !=null && !plainText.isBlank()) {
+            textAnalysis.add("[text/plain]: "+ "\n" + plainText);
+        }
+        if (htmlTextConverted != null && !htmlTextConverted.isBlank()) {
+            textAnalysis.add("[text/html]: " + "\n" + htmlTextConverted);
+        }
+        if (ampHtmlTextConverted != null && !ampHtmlTextConverted.isBlank()) {
+            textAnalysis.add("[text/x-amp-html]: " + "\n" + ampHtmlTextConverted);
+        }
+
+        String textForAnalysis = String.join("\n\n", textAnalysis);
 
         EmailContent emailContent = new EmailContent(
             plainText,
             htmlText,
-            ampHtmlText);
+            ampHtmlText,
+            textForAnalysis);
 
         return emailContent;
     }

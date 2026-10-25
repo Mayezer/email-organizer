@@ -17,7 +17,7 @@ public class EmailProcessingService {
     private final EmailRepository emailRepository;
 
     public EmailProcessingService (
-        Gmail gmail, 
+        Gmail gmail,
         EmailRepository emailRepository) {
             this.gmail = gmail;
             this.emailRepository = emailRepository;
@@ -26,29 +26,19 @@ public class EmailProcessingService {
     public void processPendingEmails() throws SQLException, IOException{
         List<Email> pendingEmails = emailRepository.findPending();
         EmailBodyExtractor extractor = new EmailBodyExtractor();
-        
+
         for (Email pendingEmail : pendingEmails) {
             String id = pendingEmail.getId();
             Message message = this.gmail.users().messages().get("me", id).execute();
             MessagePart payload = message.getPayload();
             EmailContent emailContent = extractor.extract(payload);
-            String body = emailContent.getPartBodyPlain();
-            String bodyHtml = emailContent.getPartBodyHtml();
-            String bodyAmpHtml = emailContent.getPartBodyAmpHtml();
 
-            String textForAnalysis = null;
+            String textForAnalysis = emailContent.getTextForAnalysis();
 
-            if (body != null && !body.isBlank()) {
-                textForAnalysis = body;
-            } else if (bodyHtml != null && !bodyHtml.isBlank()) {
-                textForAnalysis = bodyHtml;
-            } else if (bodyAmpHtml != null && !bodyAmpHtml.isBlank()) {
-                textForAnalysis = bodyAmpHtml;
-            } else {
+            if (textForAnalysis == null || textForAnalysis.isBlank()) {
                 System.err.println("Email with no text content!" + id);
                 continue;
             }
-
         }
     }
 }
