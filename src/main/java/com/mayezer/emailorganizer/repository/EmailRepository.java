@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.mayezer.emailorganizer.model.Email;
+import com.mayezer.emailorganizer.model.EmailAnalysis;
 
 public class EmailRepository {
 
@@ -19,9 +20,8 @@ public class EmailRepository {
     }
 
     public boolean existsById(String gmailId) throws SQLException { // Retorna um valor boolean, assinatura existById tem como parâmetro uma String chamada gmailId.
-
         String sql = "SELECT 1 FROM emails WHERE gmail_id = ? LIMIT 1"; // Pesquisa SQL - Não usamos loop, pois retorna apenas 1.
-        
+
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, gmailId);
             try (ResultSet result = statement.executeQuery()) {
@@ -40,7 +40,7 @@ public class EmailRepository {
         }
     }
 
-    public List<Email> findPending() throws  SQLException{
+    public List<Email> findPending() throws SQLException {
         String sql = "SELECT gmail_id, sender, subject FROM emails WHERE processing_status = 'PENDING'";
         List<Email> pendingEmails = new ArrayList<>();
 
@@ -56,5 +56,18 @@ public class EmailRepository {
             }
         }
         return pendingEmails;
+    }
+
+    public void saveAnalysis(String gmailId, EmailAnalysis analysis) throws SQLException {
+        String sql = "UPDATE emails SET category = ?, summary = ?, requires_action = ?, processing_status = 'COMPLETED', processed_at = CURRENT_TIMESTAMP WHERE gmail_id = ?";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, analysis.getCategory());
+            statement.setString(2, analysis.getSummary());
+            statement.setBoolean(3, analysis.getRequiresAction());
+            statement.setString(4, gmailId);
+            statement.executeUpdate();
+
+        }
     }
 }

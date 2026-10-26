@@ -8,6 +8,7 @@ import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.model.Message;
 import com.google.api.services.gmail.model.MessagePart;
 import com.mayezer.emailorganizer.model.Email;
+import com.mayezer.emailorganizer.model.EmailAnalysis;
 import com.mayezer.emailorganizer.model.EmailContent;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 
@@ -15,12 +16,15 @@ public class EmailProcessingService {
 
     private final Gmail gmail;
     private final EmailRepository emailRepository;
+    private final EmailAnalysisService emailAnalysisService;
 
     public EmailProcessingService (
         Gmail gmail,
-        EmailRepository emailRepository) {
+        EmailRepository emailRepository,
+        EmailAnalysisService emailAnalysisService) {
             this.gmail = gmail;
             this.emailRepository = emailRepository;
+            this.emailAnalysisService = emailAnalysisService;
     }
 
     public void processPendingEmails() throws SQLException, IOException{
@@ -39,6 +43,10 @@ public class EmailProcessingService {
                 System.err.println("Email with no text content!" + id);
                 continue;
             }
+
+            EmailAnalysis emailAnalysis = emailAnalysisService.analyze(pendingEmail, textForAnalysis);
+            emailRepository.saveAnalysis(id, emailAnalysis);
+            
         }
     }
 }

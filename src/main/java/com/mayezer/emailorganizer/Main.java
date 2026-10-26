@@ -11,6 +11,7 @@ import com.mayezer.emailorganizer.config.GmailClientFactory;
 import com.mayezer.emailorganizer.config.OpenAIClientFactory;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 import com.mayezer.emailorganizer.service.EmailAnalysisService;
+import com.mayezer.emailorganizer.service.EmailProcessingService;
 import com.mayezer.emailorganizer.service.EmailService;
 import com.openai.client.OpenAIClient;
 
@@ -27,7 +28,8 @@ public class Main {
             EmailService emailService = new EmailService(gmail, emailRepository); // Injeção de depêndencia por construtor.
             emailService.listEmails();
 
-
+            EmailProcessingService emailProcessingService = new EmailProcessingService(gmail, emailRepository, emailAnalysisService);
+            emailProcessingService.processPendingEmails();
         }
     }
 }

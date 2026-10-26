@@ -1,6 +1,5 @@
 package com.mayezer.emailorganizer.service;
 
-import com.google.api.services.gmail.Gmail;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
 import com.openai.client.OpenAIClient;
@@ -8,6 +7,7 @@ import com.openai.models.responses.ResponseCreateParams;
 import com.openai.models.responses.StructuredResponse;
 import com.openai.models.responses.StructuredResponseCreateParams;
 import com.openai.models.responses.StructuredResponseOutputItem;
+import com.openai.models.responses.StructuredResponseOutputMessage;
 
 public class EmailAnalysisService {
 
@@ -47,18 +47,25 @@ public class EmailAnalysisService {
         structuredBuilder = requestBuilder.text(EmailAnalysis.class);
         StructuredResponseCreateParams<EmailAnalysis> params = structuredBuilder.build();
         StructuredResponse<EmailAnalysis> response = client.responses().create(params);
-        for (StructuredResponseOutputItem<EmailAnalysis> item : itens) {
-            
+        for (StructuredResponseOutputItem<EmailAnalysis> item : response.output()) {
+            if (item.isMessage()) {
+                StructuredResponseOutputMessage<EmailAnalysis> message = item.asMessage();
+                for (StructuredResponseOutputMessage.Content<EmailAnalysis> content : message.content()) {
+                    if (content.isOutputText()) {
+                        return content.asOutputText();
+                    }
+                }
+            }
         }
-
-        }
+        throw new IllegalStateException("OpenAI's response did not provide an analysis!");
+    }
 
     private String buildAnalysisInput(Email email, String textForAnalysis) {
         String senderParts = email.getSender();
         String subjectParts = email.getSubject();
 
-        return "Remetente: " + senderParts + "\n"
-            + "Assunto: " + subjectParts + "\n"
-            + "Conteúdo: " + textForAnalysis;
+        return "Sender: " + senderParts + "\n"
+            + "Subject: " + subjectParts + "\n"
+            + "Content: " + textForAnalysis;
     }
 }
