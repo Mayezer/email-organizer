@@ -7,6 +7,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.mayezer.emailorganizer.model.AnalyzedEmail;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
 
@@ -67,7 +68,50 @@ public class EmailRepository {
             statement.setBoolean(3, analysis.getRequiresAction());
             statement.setString(4, gmailId);
             statement.executeUpdate();
-
         }
+    }
+
+    public void markFailed(String gmailId) throws SQLException {
+        String sql = "UPDATE emails SET processing_status = 'FAILED' WHERE gmail_id = ?";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, gmailId);
+            statement.executeUpdate();
+        }
+    }
+
+    public boolean markForRetry(String gmailId) throws SQLException {
+        String sql = "UPDATE emails SET processing_status = 'PENDING' WHERE gmail_id = ? AND processing_status = 'FAILED'";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, gmailId);
+            int updatedRows = statement.executeUpdate();
+            return updatedRows == 1;
+        }
+    }
+
+    public List<AnalyzedEmail> findCompleted() throws SQLException {
+        String sql = "SELECT gmail_id, sender, subject, category, summary, requires_action FROM emails WHERE processing_status = 'COMPLETED' AND processed_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' ORDER BY processed_at DESC";
+        List<AnalyzedEmail> analyzedEmails = new ArrayList<>();
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            try (ResultSet result = statement.executeQuery()) {
+                while (result.next()) {
+                    String id = result.getString("gmail_id");
+                    String sender = result.getString("sender");
+                    String subject = result.getString("subject");
+                    String category = result.getString("category");
+                    String summary = result.getString("summary");
+                    boolean requiresAction = result.getBoolean("requires_action");
+
+                    Email email = new Email(id, sender, subject);
+                    EmailAnalysis analysis = new EmailAnalysis(category, summary, requiresAction);
+
+                    AnalyzedEmail analyzedEmail = new AnalyzedEmail(email, analysis);
+                    analyzedEmails.add(analyzedEmail);
+                }
+            }
+        }
+        return analyzedEmails;
     }
 }

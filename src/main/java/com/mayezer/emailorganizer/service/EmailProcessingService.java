@@ -27,26 +27,30 @@ public class EmailProcessingService {
             this.emailAnalysisService = emailAnalysisService;
     }
 
-    public void processPendingEmails() throws SQLException, IOException{
+    public void processPendingEmails() throws SQLException {
         List<Email> pendingEmails = emailRepository.findPending();
         EmailBodyExtractor extractor = new EmailBodyExtractor();
 
         for (Email pendingEmail : pendingEmails) {
             String id = pendingEmail.getId();
-            Message message = this.gmail.users().messages().get("me", id).execute();
-            MessagePart payload = message.getPayload();
-            EmailContent emailContent = extractor.extract(payload);
-
-            String textForAnalysis = emailContent.getTextForAnalysis();
-
-            if (textForAnalysis == null || textForAnalysis.isBlank()) {
-                System.err.println("Email with no text content!" + id);
-                continue;
+            try {
+                Message message = this.gmail.users().messages().get("me", id).execute();
+                MessagePart payload = message.getPayload();
+                EmailContent emailContent = extractor.extract(payload);
+                String textForAnalysis = emailContent.getTextForAnalysis();
+                if (textForAnalysis == null || textForAnalysis.isBlank()) {
+                    System.err.println("Email with no text content!" + id);
+                    emailRepository.markFailed(id);
+                    continue;
+                }
+                EmailAnalysis emailAnalysis = emailAnalysisService.analyze(pendingEmail, textForAnalysis);
+                emailRepository.saveAnalysis(id, emailAnalysis);
             }
 
-            EmailAnalysis emailAnalysis = emailAnalysisService.analyze(pendingEmail, textForAnalysis);
-            emailRepository.saveAnalysis(id, emailAnalysis);
-            
+            catch (IOException | RuntimeException exception) {
+                System.err.println("Failed to process email: " + id + " | Error: " + exception.getMessage());
+                emailRepository.markFailed(id);
+            }
         }
     }
 }
