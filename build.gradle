@@ -23,6 +23,7 @@ dependencies {
     implementation 'org.jsoup:jsoup:1.23.2' // jsoup interpreta a estrutura HTML e oferece métodos para extrair o conteúdo textual.
     testImplementation 'org.junit.jupiter:junit-jupiter:5.14.4' // Ferramenta para escrever testes.
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'// Só irá rodar quando os testes forem executados.
+    implementation 'com.openai:openai-java:4.91.0' // OpenAI
 }
 
 test {
