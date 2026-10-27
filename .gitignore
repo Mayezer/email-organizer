@@ -13,3 +13,8 @@ bin/
 
 # VSCode
 .vscode/
+
+# Python - API
+.venv
+.venv/
+**/__pycache__/
