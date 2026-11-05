@@ -1,13 +1,16 @@
-apply plugin: 'java'
-apply plugin: 'application'
+plugins {
+    id 'java'
+    id 'application'
+    id 'org.springframework.boot' version '4.1.2' // Implementando Spring boot
+}
 
 application {
     mainClass = 'com.mayezer.emailorganizer.Main'
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 version = '1.0'
 
@@ -24,6 +27,8 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter:5.14.4' // Ferramenta para escrever testes.
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'// Só irá rodar quando os testes forem executados.
     implementation 'com.openai:openai-java:4.91.0' // OpenAI
+    implementation platform('org.springframework.boot:spring-boot-dependencies:4.1.2') // Implementando Spring boot
+    implementation 'org.springframework.boot:spring-boot-starter' // Implementando Spring boot
 }
 
 test {

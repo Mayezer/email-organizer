@@ -4,6 +4,7 @@ tokens/
 .env
 .env.*
 !.env.example
+oauth-backups/
 
 # Gradle / Java
 .gradle/
@@ -18,3 +19,6 @@ bin/
 .venv
 .venv/
 **/__pycache__/
+
+# docs
+docs/

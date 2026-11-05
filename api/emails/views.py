@@ -13,6 +13,12 @@ class EmailListCreateView(generics.ListCreateAPIView):
     queryset = Emails.objects.all()
     serializer_class = EmailSerializers
 
+    def get_queryset(self):
+        queryset = Emails.objects.all()
+        category = self.request.query_params.get("category")
+        if category != None:
+            queryset = queryset.filter(category = category)
+        return queryset
 
 class EmailRetriaveDestroyView(generics.RetrieveDestroyAPIView):
 
