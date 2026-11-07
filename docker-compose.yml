@@ -13,6 +13,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - EMAIL_SYNC_ACCOUNT=${EMAIL_SYNC_ACCOUNT:-}
 
   email_organizer_db:
     image: postgres:18.6

@@ -23,6 +23,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 
+EMAIL_SYNC_ACCOUNT = os.environ.get("EMAIL_SYNC_ACCOUNT", "").strip().lower()
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 

@@ -1,8 +1,15 @@
 from django.urls import path
-from .views import EmailListCreateView, EmailRetriaveDestroyView
+from .sync_views import EmailSyncDetailView, EmailSyncView
+from .views import EmailChangesView, EmailListCreateView, EmailManualCategoryView, EmailPageView, EmailRetriaveDestroyView
 
 
 urlpatterns = [
+    path('email-sync-jobs/', EmailSyncView.as_view(), name='email-sync-jobs'),
+    path('email-sync-jobs/<uuid:pk>/', EmailSyncDetailView.as_view(), name='email-sync-job'),
+    path('email-pages/', EmailPageView.as_view(), name='email-pages'),
+    path('email-changes/', EmailChangesView.as_view(), name='email-changes'),
+    path('emails/<str:pk>/manual-category/', EmailManualCategoryView.as_view(), name='email-manual-category'),
+
     path('emails/',
         EmailListCreateView.as_view(),
         name='emails'),

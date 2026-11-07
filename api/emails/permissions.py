@@ -10,6 +10,9 @@ class EmailPermissionClass(permissions.BasePermission):
         if request.method == 'POST':
             return request.user.has_perm('emails.add_emails')
 
+        if request.method == 'PATCH':
+            return request.user.has_perm('emails.change_emails')
+
         if request.method == 'DELETE':
             return request.user.has_perm('emails.delete_emails')
 

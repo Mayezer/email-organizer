@@ -44,6 +44,12 @@ public class EmailReportService {
             } else {
                 System.out.println("Requires action: No");
             }
+            if (emailAnalysis.getSecurityStatus() != null) {
+                System.out.println("Security: " + emailAnalysis.getSecurityStatus());
+                if (emailAnalysis.getSecurityReason() != null && !emailAnalysis.getSecurityReason().isBlank()) {
+                    System.out.println("Security assessment: " + emailAnalysis.getSecurityReason());
+                }
+            }
             System.out.println();
         }
     }

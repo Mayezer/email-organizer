@@ -4,79 +4,174 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
 import com.mayezer.emailorganizer.model.AnalyzedEmail;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
+import com.mayezer.emailorganizer.model.EmailAnalysis.SecurityStatus;
 
 public class EmailRepository {
 
+    private static final String EMAIL_COLUMNS = "gmail_id, sender, subject, thread_id, received_at";
     private final Connection connection;
 
-    public EmailRepository(
-        Connection connection) {
-            this.connection = connection;
+    public EmailRepository(Connection connection) {
+        this.connection = connection;
     }
 
-    public boolean existsById(String gmailId) throws SQLException { // Retorna um valor boolean, assinatura existById tem como parâmetro uma String chamada gmailId.
-        String sql = "SELECT 1 FROM emails WHERE gmail_id = ? LIMIT 1"; // Pesquisa SQL - Não usamos loop, pois retorna apenas 1.
-
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+    public boolean existsById(String gmailId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+            "SELECT 1 FROM emails WHERE gmail_id = ?")) {
             statement.setString(1, gmailId);
             try (ResultSet result = statement.executeQuery()) {
-                return result.next(); // Retorna true ou false, por isso não precisamos de if else.
+                return result.next();
             }
         }
     }
-    public void save(Email email) throws SQLException {
-        String sql = "INSERT INTO emails (gmail_id, sender, subject) VALUES (?, ?, ?)";
+
+    public boolean save(Email email) throws SQLException {
+        return save(email, null);
+    }
+
+    public boolean save(Email email, String syncAccount) throws SQLException {
+        String sql = """
+            INSERT INTO emails (gmail_id, sender, subject, thread_id, received_at, sync_account)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (gmail_id) DO NOTHING
+            """;
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, email.getId());
             statement.setString(2, email.getSender());
             statement.setString(3, email.getSubject());
-            statement.executeUpdate();
+            statement.setString(4, email.getThreadId());
+            statement.setObject(5, databaseTime(email.getReceivedAt()));
+            statement.setString(6, syncAccount);
+            return statement.executeUpdate() == 1;
         }
     }
 
-    public List<Email> findPending() throws SQLException {
-        String sql = "SELECT gmail_id, sender, subject FROM emails WHERE processing_status = 'PENDING'";
-        List<Email> pendingEmails = new ArrayList<>();
+    public boolean fillMissingMetadata(Email email) throws SQLException {
+        String sql = """
+            UPDATE emails SET thread_id = COALESCE(thread_id, ?), received_at = COALESCE(received_at, ?)
+            WHERE gmail_id = ? AND (thread_id IS NULL OR received_at IS NULL)
+            """;
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            try (ResultSet result = statement.executeQuery()) {
-                while (result.next()) {
-                    String id = result.getString("gmail_id");
-                    String sender = result.getString("sender");
-                    String subject = result.getString("subject");
-                    Email email = new Email(id, sender, subject);
-                    pendingEmails.add(email);
-                }
-            }
+            statement.setString(1, email.getThreadId());
+            statement.setObject(2, databaseTime(email.getReceivedAt()));
+            statement.setString(3, email.getId());
+            return statement.executeUpdate() == 1;
         }
-        return pendingEmails;
     }
 
-    public void saveAnalysis(String gmailId, EmailAnalysis analysis) throws SQLException {
-        String sql = "UPDATE emails SET category = ?, summary = ?, requires_action = ?, processing_status = 'COMPLETED', processed_at = CURRENT_TIMESTAMP WHERE gmail_id = ?";
+    public List<Email> findMissingMetadata(String afterId, int limit) throws SQLException {
+        return findBatch("(thread_id IS NULL OR received_at IS NULL)", afterId, limit);
+    }
+
+    public List<Email> findLegacyAnalyses(String afterId, int limit) throws SQLException {
+        return findBatch("processing_status = 'COMPLETED' AND security_status IS NULL", afterId, limit);
+    }
+
+    private List<Email> findBatch(String condition, String afterId, int limit) throws SQLException {
+        String sql = "SELECT " + EMAIL_COLUMNS + " FROM emails WHERE " + condition
+            + " AND gmail_id > ? ORDER BY gmail_id LIMIT ?";
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, afterId);
+            statement.setInt(2, limit);
+            return readEmails(statement);
+        }
+    }
+
+    public List<Email> findLegacyPending(int limit) throws SQLException {
+        String sql = "SELECT " + EMAIL_COLUMNS + " FROM emails WHERE processing_status = 'PENDING'"
+            + " AND sync_account IS NULL ORDER BY received_at NULLS LAST, gmail_id LIMIT ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, limit);
+            return readEmails(statement);
+        }
+    }
+
+    public Email findSyncPending(String account) throws SQLException {
+        String sql = "SELECT " + EMAIL_COLUMNS + " FROM emails WHERE processing_status = 'PENDING'"
+            + " AND sync_account = ? ORDER BY received_at NULLS LAST, gmail_id LIMIT 1";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, account);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? readEmail(result) : null;
+            }
+        }
+    }
+
+    public List<Email> findEarlierInThread(Email email, int limit) throws SQLException {
+        String sql = "SELECT " + EMAIL_COLUMNS + " " + """
+             FROM emails
+             WHERE thread_id = ? AND received_at < ? AND gmail_id <> ?
+             ORDER BY received_at DESC, gmail_id LIMIT ?
+             """;
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, email.getThreadId());
+            statement.setObject(2, databaseTime(email.getReceivedAt()));
+            statement.setString(3, email.getId());
+            statement.setInt(4, limit);
+            return readEmails(statement);
+        }
+    }
+
+    public List<Email> findRecentFromSender(Email email, String address, int limit) throws SQLException {
+        String sql = "SELECT " + EMAIL_COLUMNS + " " + """
+             FROM emails
+             WHERE received_at >= ? AND received_at < ?
+               AND thread_id IS NOT NULL AND thread_id <> ? AND gmail_id <> ?
+               AND lower(btrim(COALESCE(substring(sender from '<([^<>]+)>[[:space:]]*$'), sender))) = ?
+             ORDER BY received_at DESC, gmail_id LIMIT ?
+             """;
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, databaseTime(email.getReceivedAt().minus(30, ChronoUnit.DAYS)));
+            statement.setObject(2, databaseTime(email.getReceivedAt()));
+            statement.setString(3, email.getThreadId());
+            statement.setString(4, email.getId());
+            statement.setString(5, address);
+            statement.setInt(6, limit);
+            return readEmails(statement);
+        }
+    }
+
+    public boolean saveAnalysis(String gmailId, EmailAnalysis analysis, boolean reanalysis) throws SQLException {
+        String sql = """
+            UPDATE emails SET category = ?, summary = ?, requires_action = ?,
+                security_status = ?, security_reason = ?
+            """ + (reanalysis
+                ? " WHERE gmail_id = ? AND processing_status = 'COMPLETED' AND security_status IS NULL"
+                : " , processing_status = 'COMPLETED', processed_at = CURRENT_TIMESTAMP"
+                    + " WHERE gmail_id = ? AND processing_status = 'PENDING'");
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, analysis.getCategory());
             statement.setString(2, analysis.getSummary());
             statement.setBoolean(3, analysis.getRequiresAction());
-            statement.setString(4, gmailId);
-            statement.executeUpdate();
+            statement.setString(4, analysis.getSecurityStatus().name());
+            statement.setString(5, analysis.getSecurityReason());
+            statement.setString(6, gmailId);
+            return statement.executeUpdate() == 1;
         }
     }
 
-    public void markFailed(String gmailId) throws SQLException {
-        String sql = "UPDATE emails SET processing_status = 'FAILED' WHERE gmail_id = ?";
+    public boolean markFailed(String gmailId) throws SQLException {
+        String sql = "UPDATE emails SET processing_status = 'FAILED' WHERE gmail_id = ? AND processing_status = 'PENDING'";
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, gmailId);
-            statement.executeUpdate();
+            return statement.executeUpdate() == 1;
         }
     }
 
@@ -85,33 +180,56 @@ public class EmailRepository {
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, gmailId);
-            int updatedRows = statement.executeUpdate();
-            return updatedRows == 1;
+            return statement.executeUpdate() == 1;
         }
     }
 
     public List<AnalyzedEmail> findCompleted() throws SQLException {
-        String sql = "SELECT gmail_id, sender, subject, category, summary, requires_action FROM emails WHERE processing_status = 'COMPLETED' AND processed_at >= CURRENT_TIMESTAMP - INTERVAL '7 days' ORDER BY processed_at DESC";
+        String sql = "SELECT " + EMAIL_COLUMNS + """
+             , category, summary, requires_action, security_status, security_reason
+             FROM emails WHERE processing_status = 'COMPLETED'
+                 AND processed_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+             ORDER BY processed_at DESC
+             """;
         List<AnalyzedEmail> analyzedEmails = new ArrayList<>();
 
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            try (ResultSet result = statement.executeQuery()) {
-                while (result.next()) {
-                    String id = result.getString("gmail_id");
-                    String sender = result.getString("sender");
-                    String subject = result.getString("subject");
-                    String category = result.getString("category");
-                    String summary = result.getString("summary");
-                    boolean requiresAction = result.getBoolean("requires_action");
-
-                    Email email = new Email(id, sender, subject);
-                    EmailAnalysis analysis = new EmailAnalysis(category, summary, requiresAction);
-
-                    AnalyzedEmail analyzedEmail = new AnalyzedEmail(email, analysis);
-                    analyzedEmails.add(analyzedEmail);
-                }
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+            ResultSet result = statement.executeQuery()) {
+            while (result.next()) {
+                String status = result.getString("security_status");
+                EmailAnalysis analysis = new EmailAnalysis(
+                    result.getString("category"),
+                    result.getString("summary"),
+                    result.getBoolean("requires_action"),
+                    status == null ? null : SecurityStatus.valueOf(status),
+                    result.getString("security_reason"));
+                analyzedEmails.add(new AnalyzedEmail(readEmail(result), analysis));
             }
         }
         return analyzedEmails;
+    }
+
+    private List<Email> readEmails(PreparedStatement statement) throws SQLException {
+        List<Email> emails = new ArrayList<>();
+        try (ResultSet result = statement.executeQuery()) {
+            while (result.next()) {
+                emails.add(readEmail(result));
+            }
+        }
+        return emails;
+    }
+
+    private Email readEmail(ResultSet result) throws SQLException {
+        OffsetDateTime receivedAt = result.getObject("received_at", OffsetDateTime.class);
+        return new Email(
+            result.getString("gmail_id"),
+            result.getString("sender"),
+            result.getString("subject"),
+            result.getString("thread_id"),
+            receivedAt == null ? null : receivedAt.toInstant());
+    }
+
+    private OffsetDateTime databaseTime(Instant time) {
+        return time == null ? null : time.atOffset(ZoneOffset.UTC);
     }
 }

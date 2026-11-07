@@ -2,14 +2,14 @@ package com.mayezer.emailorganizer.service;
 
 import java.io.IOException;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 
 import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.MessagePart;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
-import com.mayezer.emailorganizer.model.EmailContent;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 
 public class EmailProcessingService {
@@ -17,40 +17,72 @@ public class EmailProcessingService {
     private final Gmail gmail;
     private final EmailRepository emailRepository;
     private final EmailAnalysisService emailAnalysisService;
+    private final EmailBodyExtractor extractor = new EmailBodyExtractor();
+    private final EmailContextService contextService;
 
-    public EmailProcessingService (
-        Gmail gmail,
-        EmailRepository emailRepository,
+    public EmailProcessingService(Gmail gmail, EmailRepository emailRepository,
         EmailAnalysisService emailAnalysisService) {
-            this.gmail = gmail;
-            this.emailRepository = emailRepository;
-            this.emailAnalysisService = emailAnalysisService;
+        this.gmail = gmail;
+        this.emailRepository = emailRepository;
+        this.emailAnalysisService = emailAnalysisService;
+        this.contextService = new EmailContextService(gmail, emailRepository, extractor);
     }
 
     public void processPendingEmails() throws SQLException {
-        List<Email> pendingEmails = emailRepository.findPending();
-        EmailBodyExtractor extractor = new EmailBodyExtractor();
-
-        for (Email pendingEmail : pendingEmails) {
-            String id = pendingEmail.getId();
-            try {
-                Message message = this.gmail.users().messages().get("me", id).execute();
-                MessagePart payload = message.getPayload();
-                EmailContent emailContent = extractor.extract(payload);
-                String textForAnalysis = emailContent.getTextForAnalysis();
-                if (textForAnalysis == null || textForAnalysis.isBlank()) {
-                    System.err.println("Email with no text content!" + id);
-                    emailRepository.markFailed(id);
-                    continue;
-                }
-                EmailAnalysis emailAnalysis = emailAnalysisService.analyze(pendingEmail, textForAnalysis);
-                emailRepository.saveAnalysis(id, emailAnalysis);
+        List<Email> batch;
+        do {
+            batch = emailRepository.findLegacyPending(50);
+            for (Email email : batch) {
+                process(email, false);
             }
+        } while (batch.size() == 50);
+    }
 
-            catch (IOException | RuntimeException exception) {
-                System.err.println("Failed to process email: " + id + " | Error: " + exception.getMessage());
-                emailRepository.markFailed(id);
+    public void reanalyze(int limit, String afterId) throws SQLException {
+        List<Email> batch = emailRepository.findLegacyAnalyses(afterId, limit);
+        List<Email> chronological = batch.stream()
+            .sorted(Comparator.comparing(Email::getReceivedAt, Comparator.nullsLast(Comparator.<Instant>naturalOrder()))
+                .thenComparing(Email::getId))
+            .toList();
+        int updated = 0;
+        for (Email email : chronological) {
+            if (process(email, true)) {
+                updated++;
             }
         }
+        System.out.printf("Reanalysis batch: %d selected, %d updated.%n", batch.size(), updated);
+        if (batch.size() == limit) {
+            System.out.println("Continue with --reanalyze " + limit + " " + batch.get(batch.size() - 1).getId());
+        }
+    }
+
+    private boolean process(Email email, boolean reanalysis) throws SQLException {
+        try {
+            Message message = gmail.users().messages().get("me", email.getId()).execute();
+            Email current = EmailService.fromGmail(message);
+            if (email.getThreadId() == null || email.getReceivedAt() == null) {
+                emailRepository.fillMissingMetadata(current);
+            }
+            return emailRepository.saveAnalysis(email.getId(), analyze(message, current), reanalysis);
+        } catch (IOException | RuntimeException exception) {
+            System.err.println("Email analysis failed (" + exception.getClass().getSimpleName() + ")");
+            if (!reanalysis) {
+                emailRepository.markFailed(email.getId());
+            }
+            return false;
+        }
+    }
+
+    EmailAnalysis analyze(Email email) throws IOException, SQLException {
+        Message message = gmail.users().messages().get("me", email.getId()).execute();
+        return analyze(message, EmailService.fromGmail(message));
+    }
+
+    private EmailAnalysis analyze(Message message, Email current) throws IOException, SQLException {
+        String text = extractor.extract(message.getPayload()).getTextForAnalysis();
+        if (text.isBlank()) {
+            throw new IllegalStateException("Email has no text content");
+        }
+        return emailAnalysisService.analyze(current, text, contextService.findHistory(current));
     }
 }
