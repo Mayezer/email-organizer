@@ -19,7 +19,7 @@ import com.google.api.services.gmail.model.Message;
 import com.mayezer.emailorganizer.config.GmailClientFactory;
 import com.mayezer.emailorganizer.config.OpenAIClientFactory;
 import com.mayezer.emailorganizer.model.Email;
-import com.mayezer.emailorganizer.model.EmailAnalysis;
+import com.mayezer.emailorganizer.model.EmailProcessingResult;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 
 final class GmailSyncMailbox implements EmailSyncWorker.Mailbox {
@@ -132,6 +132,20 @@ final class GmailSyncMailbox implements EmailSyncWorker.Mailbox {
         return emails;
     }
 
+    @Override
+    public boolean isTrashedOrMissing(String gmailId) throws IOException {
+        try {
+            var message = gmail.users().messages().get("me", gmailId)
+                .setFormat("metadata").setFields("labelIds").execute();
+            return orEmpty(message.getLabelIds()).contains("TRASH");
+        } catch (GoogleJsonResponseException exception) {
+            if (exception.getStatusCode() == 404 || exception.getStatusCode() == 410) {
+                return true;
+            }
+            throw exception;
+        }
+    }
+
     private static void checkNextToken(String current, String next) throws IOException {
         if (next != null && Objects.equals(next, current)) {
             throw new IOException("Gmail did not advance the page token.");
@@ -150,10 +164,14 @@ final class GmailSyncMailbox implements EmailSyncWorker.Mailbox {
     }
 
     @Override
-    public EmailAnalysis analyze(Email email, EmailRepository repository) throws IOException, SQLException {
+    public EmailProcessingResult analyze(Email email, EmailRepository repository) throws IOException, SQLException {
+        return new EmailProcessingService(gmail, repository, this::analysisService).analyze(email);
+    }
+
+    private EmailAnalysisService analysisService() {
         if (analysisService == null) {
             analysisService = new EmailAnalysisService(OpenAIClientFactory.createBackgroundClient());
         }
-        return new EmailProcessingService(gmail, repository, analysisService).analyze(email);
+        return analysisService;
     }
 }

@@ -4,7 +4,7 @@ services:
     build: ./api
     restart: always
     ports:
-      - 8000:8000
+      - "127.0.0.1:8000:8000"
     depends_on:
         email_organizer_db:
             condition: service_healthy
@@ -14,6 +14,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - EMAIL_SYNC_ACCOUNT=${EMAIL_SYNC_ACCOUNT:-}
+      - EMAIL_APP_SERVICE_USERNAME=${EMAIL_APP_SERVICE_USERNAME:-}
 
   email_organizer_db:
     image: postgres:18.6

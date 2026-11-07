@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.mayezer.emailorganizer.model.Email;
-import com.mayezer.emailorganizer.model.EmailAnalysis;
+import com.mayezer.emailorganizer.model.EmailProcessingResult;
 
 public final class EmailSyncRepository {
     public enum Phase { IMPORTING, ANALYZING }
@@ -120,8 +120,12 @@ public final class EmailSyncRepository {
         });
     }
 
-    public void saveAnalysis(Lease lease, Email email, EmailAnalysis analysis) throws SQLException {
+    public void saveAnalysis(Lease lease, Email email, EmailProcessingResult result) throws SQLException {
         finish(lease, () -> {
+            if (result != null) {
+                emails.fillMissingIndicators(email.getId(), result.indicators());
+            }
+            var analysis = result == null ? null : result.analysis();
             boolean saved = analysis != null && emails.saveAnalysis(email.getId(), analysis, false);
             boolean failed = analysis == null && emails.markFailed(email.getId());
             update(lease, "ANALYZING", lease.progress().clear(), 0, 0, 0, saved ? 1 : 0, failed ? 1 : 0);

@@ -23,6 +23,11 @@ class Emails(models.Model):
     processed_at = models.DateTimeField(blank=True, null=True)
     category = models.TextField(blank=True, null=True)
     manual_category = models.TextField(blank=True, null=True)
+    board_column = models.TextField(editable=False, null=True)
+    has_attachments = models.BooleanField(editable=False, null=True)
+    has_links = models.BooleanField(editable=False, null=True)
+    trash_pending_at = models.DateTimeField(editable=False, null=True)
+    trashed_at = models.DateTimeField(editable=False, null=True)
     summary = models.TextField(blank=True, null=True)
     requires_action = models.BooleanField(blank=True, null=True)
     security_status = models.CharField(
@@ -34,6 +39,27 @@ class Emails(models.Model):
         managed = True
         db_table = 'emails'
         indexes = [
+            models.Index(
+                fields=["sync_account", "trash_pending_at", "gmail_id"],
+                condition=models.Q(trash_pending_at__isnull=False),
+                name="emails_trash_pending_idx",
+            ),
+            models.Index(
+                fields=["gmail_id"],
+                condition=models.Q(has_attachments__isnull=True) | models.Q(has_links__isnull=True),
+                name="emails_indicators_pending_idx",
+            ),
+            models.Index(
+                Coalesce("board_column", "manual_category", "category", models.Value(""), output_field=models.TextField()),
+                models.F("processing_status"), models.F("imported_at").desc(), models.F("gmail_id").desc(),
+                name="emails_board_position_idx",
+            ),
+            models.Index(fields=["processing_status", "-imported_at", "-gmail_id"], name="emails_status_page_idx"),
+            models.Index(
+                Coalesce("manual_category", "category", models.Value(""), output_field=models.TextField()),
+                models.F("processing_status"), models.F("imported_at").desc(), models.F("gmail_id").desc(),
+                name="emails_board_category_idx",
+            ),
             models.Index(fields=["thread_id", "received_at"], name="emails_thread_received_idx"),
             models.Index(fields=["received_at"], name="emails_received_idx"),
             models.Index(
@@ -42,6 +68,21 @@ class Emails(models.Model):
                 name="emails_sync_pending_idx",
             ),
             models.Index(fields=["-imported_at", "-gmail_id"], name="emails_imported_gmail_idx"),
+            models.Index(
+                fields=["sync_account", "-imported_at", "-gmail_id"],
+                condition=models.Q(sync_account__isnull=False),
+                name="emails_account_page_idx",
+            ),
+            models.Index(
+                fields=["sync_account", "import_revision"],
+                condition=models.Q(sync_account__isnull=False, import_revision__isnull=False),
+                name="emails_account_import_idx",
+            ),
+            models.Index(
+                fields=["sync_account", "update_revision"],
+                condition=models.Q(sync_account__isnull=False, update_revision__isnull=False),
+                name="emails_account_update_idx",
+            ),
             models.Index(
                 fields=["import_revision"], condition=models.Q(import_revision__isnull=False),
                 name="emails_import_revision_idx",

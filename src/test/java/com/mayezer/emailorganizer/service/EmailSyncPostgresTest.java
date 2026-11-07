@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -27,6 +28,8 @@ import com.google.api.services.gmail.Gmail;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
 import com.mayezer.emailorganizer.model.EmailAnalysis.SecurityStatus;
+import com.mayezer.emailorganizer.model.EmailIndicators;
+import com.mayezer.emailorganizer.model.EmailProcessingResult;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 import com.mayezer.emailorganizer.repository.EmailSyncRepository;
 import com.mayezer.emailorganizer.service.EmailSyncWorker.HistoryBatch;
@@ -38,9 +41,41 @@ class EmailSyncPostgresTest {
     private final String account = prefix + "@example.test";
 
     @Test
+    void keepsAnalysisContextInsideTheMailbox() throws SQLException {
+        try (Connection connection = open()) {
+            var repository = new EmailRepository(connection);
+            String sender = "sender@example.test";
+            String thread = prefix + "-thread";
+            Instant now = Instant.parse("2026-11-07T12:00:00Z");
+            var current = new Email(prefix + "-current", sender, "Synthetic subject", thread, now);
+            var sameThread = new Email(prefix + "-same", sender, "Synthetic subject", thread, now.minusSeconds(20));
+            var related = new Email(prefix + "-related", sender, "Synthetic subject", prefix + "-related-thread",
+                now.minusSeconds(20));
+            var foreignSameThread = new Email(prefix + "-foreign-same", sender, "Private subject", thread,
+                now.minusSeconds(10));
+            var foreignRelated = new Email(prefix + "-foreign-related", sender, "Private subject",
+                prefix + "-foreign-thread", now.minusSeconds(10));
+            repository.save(current, account);
+            repository.save(sameThread, account);
+            repository.save(related, account);
+            repository.save(foreignSameThread, "other-" + account);
+            repository.save(foreignRelated, "other-" + account);
+
+            assertEquals(List.of(sameThread.getId()), repository.findEarlierInThread(current, 4).stream()
+                .map(Email::getId).toList());
+            assertEquals(List.of(related.getId()), repository.findRecentFromSender(current, sender, 4).stream()
+                .map(Email::getId).toList());
+        }
+    }
+
+    @Test
     void resumesCommittedPageAfterWorkerStopsAndKeepsMetadataWhenAnalysisFails() throws SQLException {
         var mailbox = new EmailSyncWorker.Mailbox() {
             @Override public void prepare() {}
+
+            @Override public boolean isTrashedOrMissing(String gmailId) {
+                throw new AssertionError("No pending trash in this scenario");
+            }
 
             @Override public String currentHistoryId() { return "100"; }
 
@@ -58,11 +93,19 @@ class EmailSyncPostgresTest {
                 return new HistoryBatch(List.of(), null, 0, "110");
             }
 
-            @Override public EmailAnalysis analyze(Email email, EmailRepository repository) throws IOException {
+            @Override public EmailProcessingResult analyze(Email email, EmailRepository repository) throws IOException, SQLException {
                 if (email.getId().equals(email(6).getId())) {
-                    throw new IOException("Simulated analysis failure");
+                    var gmail = new GmailFixture();
+                    gmail.body(6, "Veja https://example.test/confirmacao");
+                    var processor = new EmailProcessingService(gmail.client(), repository, () -> {
+                        throw new IllegalStateException("Synthetic analysis failure");
+                    });
+                    var result = processor.analyze(email);
+                    gmail.assertConsumed();
+                    return result;
                 }
-                return new EmailAnalysis("other", "Synthetic summary", false, SecurityStatus.NO_ALERT, null);
+                return new EmailProcessingResult(new EmailIndicators(false, false),
+                    new EmailAnalysis("other", "Synthetic summary", false, SecurityStatus.NO_ALERT, null));
             }
         };
 
@@ -105,7 +148,33 @@ class EmailSyncPostgresTest {
             assertEquals("1", jobField(restarted, "analysis_failed_count"));
             assertEquals(6, countEmails(restarted, "COMPLETED"));
             assertEquals(1, countEmails(restarted, "FAILED"));
-            assertTrue(new EmailRepository(restarted).existsById(email(6).getId()));
+            assertEquals(new EmailIndicators(false, true), indicators(restarted, 6));
+            assertEquals(new EmailIndicators(false, false), indicators(restarted, 7));
+        }
+    }
+
+    @Test
+    void backfillsOnlyMissingIndicatorsInResumableBatches() throws IOException, SQLException {
+        try (Connection connection = open()) {
+            var repository = new EmailRepository(connection);
+            for (int n = 1; n <= 4; n++) {
+                repository.save(email(n));
+            }
+            repository.fillMissingIndicators(email(2).getId(), new EmailIndicators(true, false));
+            var gmail = new GmailFixture();
+            gmail.body(1, "Veja https://example.test/confirmacao");
+            gmail.metadata(3, 404);
+            gmail.body(4, "Mensagem simples");
+            var service = new EmailService(gmail.client(), repository);
+            service.backfillIndicators(1, prefix + "-0");
+            service.backfillIndicators(1, email(1).getId());
+            service.backfillIndicators(1, email(3).getId());
+            gmail.assertConsumed();
+            assertEquals(new EmailIndicators(false, true), indicators(connection, 1));
+            assertEquals(new EmailIndicators(true, false), indicators(connection, 2));
+            assertEquals(new EmailIndicators(null, null), indicators(connection, 3));
+            assertEquals(new EmailIndicators(false, false), indicators(connection, 4));
+            assertFalse(repository.fillMissingIndicators(email(2).getId(), new EmailIndicators(false, true)));
         }
     }
 
@@ -290,6 +359,44 @@ class EmailSyncPostgresTest {
     }
 
     @Test
+    void reconcilesConfirmedTrashAfterLocalFailureAndKeepsItOutOfTheNextSync() throws SQLException {
+        try (Connection connection = open()) {
+            enqueue(connection);
+            var jobs = new EmailSyncRepository(connection);
+            jobs.startFullScan(jobs.claim(account), "100");
+            jobs.saveFullPage(jobs.claim(account), account, List.of(email(1), email(2)), null);
+            jobs.saveHistoryBatch(jobs.claim(account), account, List.of(), null, 0, "110");
+            jobs.complete(jobs.claim(account));
+            try (var prepare = connection.prepareStatement(
+                    "UPDATE emails SET trash_pending_at = CURRENT_TIMESTAMP WHERE sync_account = ?")) {
+                prepare.setString(1, account);
+                assertEquals(2, prepare.executeUpdate());
+            }
+            enqueue(connection);
+            var gmail = new GmailFixture();
+            gmail.labels(1, "TRASH");
+            gmail.labels(2, "INBOX");
+            gmail.history("110", null, null, "120", 1);
+            runSteps(gmail.worker(), connection, 3);
+            gmail.assertConsumed();
+            assertEquals("0", jobField(connection, "imported_count"));
+            assertEquals("1", jobField(connection, "analyzed_count"));
+            var repository = new EmailRepository(connection);
+            assertTrue(repository.existsById(email(1).getId()));
+            assertEquals(List.of(email(2).getId()), repository.findPendingTrash(account, 5).stream()
+                .map(EmailRepository.PendingTrash::gmailId).toList());
+            try (var query = connection.prepareStatement(
+                    "SELECT trashed_at FROM emails WHERE gmail_id = ?")) {
+                query.setString(1, email(1).getId());
+                try (var row = query.executeQuery()) {
+                    assertTrue(row.next());
+                    assertNotNull(row.getObject(1));
+                }
+            }
+        }
+    }
+
+    @Test
     void repeatedHistoryExpiryStopsInsteadOfRescanningForeverAndIgnoresAnExpiredLease() throws SQLException {
         try (Connection connection = open()) {
             enqueue(connection);
@@ -324,12 +431,18 @@ class EmailSyncPostgresTest {
         private final ArrayDeque<Exchange> responses = new ArrayDeque<>();
         private static final String USER_PATH = "/gmail/v1/users/me/";
 
-        private EmailSyncWorker worker() {
-            var client = new Gmail.Builder(this, GsonFactory.getDefaultInstance(), null)
+        private Gmail client() {
+            return new Gmail.Builder(this, GsonFactory.getDefaultInstance(), null)
                 .setApplicationName("email-sync-test").build();
-            var adapter = new GmailSyncMailbox(account, client);
+        }
+
+        private EmailSyncWorker worker() {
+            var adapter = new GmailSyncMailbox(account, client());
             return new EmailSyncWorker(account, new EmailSyncWorker.Mailbox() {
                 @Override public void prepare() {}
+                @Override public boolean isTrashedOrMissing(String gmailId) throws IOException {
+                    return adapter.isTrashedOrMissing(gmailId);
+                }
                 @Override public String currentHistoryId() throws IOException { return adapter.currentHistoryId(); }
                 @Override public Page fetchPage(String token, EmailRepository repository) throws IOException, SQLException {
                     return adapter.fetchPage(token, repository);
@@ -338,8 +451,9 @@ class EmailSyncPostgresTest {
                         EmailRepository repository) throws IOException, SQLException {
                     return adapter.fetchHistory(historyId, token, offset, repository);
                 }
-                @Override public EmailAnalysis analyze(Email email, EmailRepository repository) {
-                    return new EmailAnalysis("other", "Synthetic summary", false, SecurityStatus.NO_ALERT, null);
+                @Override public EmailProcessingResult analyze(Email email, EmailRepository repository) {
+                    return new EmailProcessingResult(new EmailIndicators(false, false),
+                        new EmailAnalysis("other", "Synthetic summary", false, SecurityStatus.NO_ALERT, null));
                 }
             });
         }
@@ -371,6 +485,19 @@ class EmailSyncPostgresTest {
             } else {
                 responses.add(new Exchange(path, 200, messageRef(n), null, null, false));
             }
+        }
+
+        private void labels(int n, String label) {
+            responses.add(new Exchange(USER_PATH + "messages/" + email(n).getId(), 200,
+                "{\"labelIds\":[\"" + label + "\"]}", null, null, false));
+        }
+
+        private void body(int n, String text) {
+            String data = Base64.getUrlEncoder().encodeToString(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String body = """
+                {"id":"%s","payload":{"mimeType":"text/plain","body":{"data":"%s"}}}
+                """.formatted(email(n).getId(), data);
+            responses.add(new Exchange(USER_PATH + "messages/" + email(n).getId(), 200, body, null, null, false));
         }
 
         private void error(String path, int status) {
@@ -405,6 +532,16 @@ class EmailSyncPostgresTest {
 
     private Connection open() throws SQLException {
         return DriverManager.getConnection(System.getenv("EMAIL_SYNC_TEST_DB_URL"));
+    }
+
+    private EmailIndicators indicators(Connection connection, int n) throws SQLException {
+        try (var query = connection.prepareStatement("SELECT has_attachments, has_links FROM emails WHERE gmail_id = ?")) {
+            query.setString(1, email(n).getId());
+            try (var result = query.executeQuery()) {
+                assertTrue(result.next());
+                return new EmailIndicators(result.getObject(1, Boolean.class), result.getObject(2, Boolean.class));
+            }
+        }
     }
 
     private void enqueue(Connection connection) throws SQLException {

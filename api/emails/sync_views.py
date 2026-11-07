@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from emails.models import EmailSyncJob
+from emails.permissions import EmailAccountPermission
 from emails.serializers import EmailSyncJobSerializer
 
 
@@ -25,10 +26,10 @@ class EmailSyncPermission(BasePermission):
 
 
 class EmailSyncView(APIView):
-    permission_classes = (IsAuthenticated, EmailSyncPermission)
+    permission_classes = (IsAuthenticated, EmailAccountPermission, EmailSyncPermission)
 
     def post(self, request):
-        account = settings.EMAIL_SYNC_ACCOUNT
+        account = request.email_account or settings.EMAIL_SYNC_ACCOUNT
         if not account:
             raise SyncUnavailable()
 
@@ -53,11 +54,11 @@ class EmailSyncView(APIView):
 
 
 class EmailSyncDetailView(APIView):
-    permission_classes = (IsAuthenticated, EmailSyncPermission)
+    permission_classes = (IsAuthenticated, EmailAccountPermission, EmailSyncPermission)
 
     def get(self, request, pk):
         try:
-            job = EmailSyncJob.objects.get(pk=pk, account=settings.EMAIL_SYNC_ACCOUNT)
+            job = EmailSyncJob.objects.get(pk=pk, account=request.email_account or settings.EMAIL_SYNC_ACCOUNT)
         except EmailSyncJob.DoesNotExist as exc:
             raise NotFound() from exc
         return Response(EmailSyncJobSerializer(job).data)

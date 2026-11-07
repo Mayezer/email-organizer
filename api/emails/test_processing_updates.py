@@ -45,6 +45,24 @@ class ProcessingUpdatesTest(APITransactionTestCase):
         old = self.client.get(reverse("email-changes"), {"cursor": after})
         self.assertEqual(old.data["items"], [])
 
+    def test_backfilled_indicators_publish_an_update_without_changing_classification(self):
+        email = Emails.objects.create(
+            gmail_id="synthetic-legacy", processing_status="COMPLETED", category="other",
+        )
+        before = self.client.get(reverse("email-pages")).data
+        self.assertIsNone(before["items"][0]["has_attachments"])
+        self.assertIsNone(before["items"][0]["has_links"])
+        Emails.objects.filter(pk=email.pk).update(has_attachments=False, has_links=True)
+
+        updated = self.updates(before["change_cursor"])
+        card = updated["items"][0]
+        self.assertEqual(card["gmail_id"], email.pk)
+        self.assertEqual(card["effective_category"], "other")
+        self.assertEqual(card["processing_status"], "COMPLETED")
+        self.assertIs(card["has_attachments"], False)
+        self.assertIs(card["has_links"], True)
+        self.assertEqual(self.updates(updated["change_cursor"])["items"], [])
+
     def test_updates_are_paged_five_five_two_and_do_not_publish_rolled_back_changes(self):
         Emails.objects.bulk_create([Emails(gmail_id=f"synthetic-{i}") for i in range(12)])
         after = self.checkpoint()

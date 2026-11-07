@@ -15,8 +15,11 @@ import com.mayezer.emailorganizer.model.AnalyzedEmail;
 import com.mayezer.emailorganizer.model.Email;
 import com.mayezer.emailorganizer.model.EmailAnalysis;
 import com.mayezer.emailorganizer.model.EmailAnalysis.SecurityStatus;
+import com.mayezer.emailorganizer.model.EmailIndicators;
 
 public class EmailRepository {
+
+    public record PendingTrash(String gmailId, OffsetDateTime pendingAt) {}
 
     private static final String EMAIL_COLUMNS = "gmail_id, sender, subject, thread_id, received_at";
     private final Connection connection;
@@ -75,6 +78,29 @@ public class EmailRepository {
         return findBatch("(thread_id IS NULL OR received_at IS NULL)", afterId, limit);
     }
 
+    public List<Email> findMissingIndicators(String afterId, int limit) throws SQLException {
+        return findBatch("(has_attachments IS NULL OR has_links IS NULL)", afterId, limit);
+    }
+
+    public boolean fillMissingIndicators(String gmailId, EmailIndicators indicators) throws SQLException {
+        String sql = """
+            UPDATE emails
+            SET has_attachments = COALESCE(emails.has_attachments, observed.attachments),
+                has_links = COALESCE(emails.has_links, observed.links)
+            FROM (VALUES (?::boolean, ?::boolean)) AS observed(attachments, links)
+            WHERE gmail_id = ? AND (
+                (has_attachments IS NULL AND observed.attachments IS NOT NULL) OR
+                (has_links IS NULL AND observed.links IS NOT NULL)
+            )
+            """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, indicators.hasAttachments());
+            statement.setObject(2, indicators.hasLinks());
+            statement.setString(3, gmailId);
+            return statement.executeUpdate() == 1;
+        }
+    }
+
     public List<Email> findLegacyAnalyses(String afterId, int limit) throws SQLException {
         return findBatch("processing_status = 'COMPLETED' AND security_status IS NULL", afterId, limit);
     }
@@ -101,7 +127,7 @@ public class EmailRepository {
 
     public Email findSyncPending(String account) throws SQLException {
         String sql = "SELECT " + EMAIL_COLUMNS + " FROM emails WHERE processing_status = 'PENDING'"
-            + " AND sync_account = ? ORDER BY received_at NULLS LAST, gmail_id LIMIT 1";
+            + " AND sync_account = ? AND trashed_at IS NULL ORDER BY received_at NULLS LAST, gmail_id LIMIT 1";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, account);
             try (ResultSet result = statement.executeQuery()) {
@@ -110,10 +136,43 @@ public class EmailRepository {
         }
     }
 
+    public List<PendingTrash> findPendingTrash(String account, int limit) throws SQLException {
+        String sql = """
+            SELECT gmail_id, trash_pending_at FROM emails
+            WHERE sync_account = ? AND trash_pending_at IS NOT NULL
+            ORDER BY trash_pending_at, gmail_id LIMIT ?
+            """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, account);
+            statement.setInt(2, limit);
+            try (ResultSet result = statement.executeQuery()) {
+                List<PendingTrash> pending = new ArrayList<>();
+                while (result.next()) {
+                    pending.add(new PendingTrash(result.getString(1), result.getObject(2, OffsetDateTime.class)));
+                }
+                return pending;
+            }
+        }
+    }
+
+    public void reconcileTrash(String account, PendingTrash pending, boolean trashed) throws SQLException {
+        String update = trashed
+            ? "trashed_at = CURRENT_TIMESTAMP, trash_pending_at = NULL"
+            : "trash_pending_at = CURRENT_TIMESTAMP";
+        try (PreparedStatement statement = connection.prepareStatement("UPDATE emails SET " + update
+                + " WHERE gmail_id = ? AND sync_account = ? AND trash_pending_at = ?")) {
+            statement.setString(1, pending.gmailId());
+            statement.setString(2, account);
+            statement.setObject(3, pending.pendingAt());
+            statement.executeUpdate();
+        }
+    }
+
     public List<Email> findEarlierInThread(Email email, int limit) throws SQLException {
         String sql = "SELECT " + EMAIL_COLUMNS + " " + """
              FROM emails
              WHERE thread_id = ? AND received_at < ? AND gmail_id <> ?
+               AND sync_account IS NOT DISTINCT FROM (SELECT sync_account FROM emails WHERE gmail_id = ?)
              ORDER BY received_at DESC, gmail_id LIMIT ?
              """;
 
@@ -121,7 +180,8 @@ public class EmailRepository {
             statement.setString(1, email.getThreadId());
             statement.setObject(2, databaseTime(email.getReceivedAt()));
             statement.setString(3, email.getId());
-            statement.setInt(4, limit);
+            statement.setString(4, email.getId());
+            statement.setInt(5, limit);
             return readEmails(statement);
         }
     }
@@ -131,6 +191,7 @@ public class EmailRepository {
              FROM emails
              WHERE received_at >= ? AND received_at < ?
                AND thread_id IS NOT NULL AND thread_id <> ? AND gmail_id <> ?
+               AND sync_account IS NOT DISTINCT FROM (SELECT sync_account FROM emails WHERE gmail_id = ?)
                AND lower(btrim(COALESCE(substring(sender from '<([^<>]+)>[[:space:]]*$'), sender))) = ?
              ORDER BY received_at DESC, gmail_id LIMIT ?
              """;
@@ -140,8 +201,9 @@ public class EmailRepository {
             statement.setObject(2, databaseTime(email.getReceivedAt()));
             statement.setString(3, email.getThreadId());
             statement.setString(4, email.getId());
-            statement.setString(5, address);
-            statement.setInt(6, limit);
+            statement.setString(5, email.getId());
+            statement.setString(6, address);
+            statement.setInt(7, limit);
             return readEmails(statement);
         }
     }

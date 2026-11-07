@@ -76,6 +76,33 @@ public class EmailService {
         }
     }
 
+    public void backfillIndicators(int limit, String afterId) throws IOException, SQLException {
+        List<Email> batch = emailRepository.findMissingIndicators(afterId, limit);
+        var extractor = new EmailBodyExtractor();
+        int updated = 0;
+        int unavailable = 0;
+        for (Email email : batch) {
+            try {
+                Message message = gmail.users().messages().get("me", email.getId())
+                    .setFormat("full").setFields("payload").execute();
+                var indicators = extractor.extract(message.getPayload()).getIndicators();
+                if (emailRepository.fillMissingIndicators(email.getId(), indicators)) {
+                    updated++;
+                }
+            } catch (GoogleJsonResponseException exception) {
+                if (exception.getStatusCode() != 404 && exception.getStatusCode() != 410) {
+                    throw exception;
+                }
+                unavailable++;
+            }
+        }
+        System.out.printf("Indicators batch: %d selected, %d updated, %d unavailable.%n",
+            batch.size(), updated, unavailable);
+        if (batch.size() == limit) {
+            System.out.println("Continue with --backfill-indicators " + limit + " " + batch.get(batch.size() - 1).getId());
+        }
+    }
+
     static Email fromGmail(Message message) {
         MessagePart payload = message.getPayload();
         List<MessagePartHeader> headers = payload == null ? null : payload.getHeaders();

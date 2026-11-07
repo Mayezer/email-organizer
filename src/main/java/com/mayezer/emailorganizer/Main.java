@@ -59,8 +59,8 @@ public class Main {
                         System.err.println("Use --retry with the ID of an email in FAILED status.");
                     }
                 }
-                case "--backfill-metadata", "--reanalyze" -> runBatch(args, repository);
-                default -> System.err.println("Use --report, --retry, --backfill-metadata, --reanalyze, --authorize-gmail or --sync-worker.");
+                case "--backfill-metadata", "--backfill-indicators", "--reanalyze" -> runBatch(args, repository);
+                default -> System.err.println("Use --report, --retry, --backfill-metadata, --backfill-indicators, --reanalyze, --authorize-gmail or --sync-worker.");
             }
         }
     }
@@ -87,8 +87,7 @@ public class Main {
 
     private static void runBatch(String[] args, EmailRepository repository)
         throws IOException, GeneralSecurityException, SQLException {
-        boolean backfill = args[0].equals("--backfill-metadata");
-        int limit = backfill ? 50 : 20;
+        int limit = args[0].equals("--reanalyze") ? 20 : 50;
         if (args.length >= 2) {
             try {
                 limit = Integer.parseInt(args[1]);
@@ -101,15 +100,20 @@ public class Main {
             return;
         }
         String afterId = args.length == 3 ? args[2] : "";
-        Gmail gmail = GmailClientFactory.createClient();
-        if (backfill) {
-            new EmailService(gmail, repository).backfillMetadata(limit, afterId);
-        } else {
-            processingService(gmail, repository).reanalyze(limit, afterId);
+        switch (args[0]) {
+            case "--backfill-indicators" ->
+                new EmailService(GmailClientFactory.createBackgroundClient(), repository)
+                    .backfillIndicators(limit, afterId);
+            case "--backfill-metadata" ->
+                new EmailService(GmailClientFactory.createClient(), repository).backfillMetadata(limit, afterId);
+            case "--reanalyze" ->
+                processingService(GmailClientFactory.createClient(), repository).reanalyze(limit, afterId);
+            default -> throw new IllegalArgumentException("Unsupported batch command");
         }
     }
 
     private static EmailProcessingService processingService(Gmail gmail, EmailRepository repository) {
-        return new EmailProcessingService(gmail, repository, new EmailAnalysisService(OpenAIClientFactory.createClient()));
+        var service = new EmailAnalysisService(OpenAIClientFactory.createClient());
+        return new EmailProcessingService(gmail, repository, () -> service);
     }
 }

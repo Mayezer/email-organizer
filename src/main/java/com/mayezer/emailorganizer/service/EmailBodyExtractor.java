@@ -7,136 +7,140 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
-import org.springframework.stereotype.Component;
 
 import com.google.api.services.gmail.model.MessagePart;
 import com.google.api.services.gmail.model.MessagePartBody;
 import com.google.api.services.gmail.model.MessagePartHeader;
 import com.mayezer.emailorganizer.model.EmailContent;
+import com.mayezer.emailorganizer.model.EmailIndicators;
 
 public class EmailBodyExtractor {
-
-    private String decodeBody(String data) {
-        String textDecoded = null;
-        if (data != null) {
-                byte[] decodeFunction = Base64.getUrlDecoder().decode(data);
-                textDecoded = new String(decodeFunction, StandardCharsets.UTF_8);
-            }
-        return textDecoded;
-    }
-
-    private String convertHtmlToText(String html) {
-        Document document = Jsoup.parse(html);
-        Elements links = document.select("a[href]");
-        for (Element link : links) {
-            String label = link.text();
-            String url = link.attr("href");
-            if (url != null && !url.isBlank()) {
-                    String linkDescription = label + ": " + url;
-                    link.text(linkDescription);
-            }
-        }
-        String text = document.text();
-        return text;
-    }
-
-    private String convertHtmlParts(List<String> htmlParts) {
-        List<String> convertedHtmlParts = new ArrayList<>();
-        for (String htmlPart : htmlParts) {
-            htmlPart = convertHtmlToText(htmlPart);
-            convertedHtmlParts.add(htmlPart);
-        }
-        return String.join("\n\n", convertedHtmlParts);
-    }
-
-    private void collectBodies(MessagePart part, Map<String, List<String>> bodies) {
-        String partBodyString = null;
-        if (part == null) {
-            return;
-        }
-
-        String fileName = part.getFilename();
-        if (fileName != null && !fileName.isBlank()) {
-            return;
-        }
-
-        List<MessagePartHeader> headers = part.getHeaders();
-        if (headers != null) {
-            for (MessagePartHeader header : headers) {
-                String name = header.getName();
-                if ("Content-Disposition".equalsIgnoreCase(name)) {
-                    String disposition = header.getValue();
-                    if (disposition != null) {
-                        String type = disposition.split(";", 2)[0].trim();
-                        if ("attachment".equalsIgnoreCase(type)) {
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        String mimeType = part.getMimeType();
-        List<MessagePart> parts = part.getParts();
-        if (parts != null && !parts.isEmpty()) {
-            for (MessagePart childPart : parts) { // Recursividade com for
-                collectBodies((childPart), bodies);
-            }
-        }
-
-        if ("text/plain".equalsIgnoreCase(mimeType)
-            || "text/html".equalsIgnoreCase(mimeType)
-            || "text/x-amp-html".equalsIgnoreCase(mimeType)) {
-            MessagePartBody partBody = part.getBody();
-            if (partBody != null) {
-                partBodyString = decodeBody(partBody.getData());
-                if (partBodyString != null) {
-                    bodies.computeIfAbsent(mimeType.toLowerCase(Locale.ROOT), key -> new ArrayList<>())
-                        .add(partBodyString);
-                }
-            }
-        }
-    }
+    private static final String PLAIN = "text/plain";
+    private static final String HTML = "text/html";
+    private static final String AMP = "text/x-amp-html";
+    private static final Pattern WEB_LINK = Pattern.compile("(?i)\\bhttps?://(?:[\\p{L}\\p{N}]|\\[)[^\\s<>\"'/?#]*");
 
     public EmailContent extract(MessagePart payload) {
-        Map<String, List<String>> bodies = new HashMap<>();
-        collectBodies(payload, bodies);
+        var parts = new BodyParts();
+        collectBodies(payload, parts);
+        List<String> plainParts = parts.bodies.getOrDefault(PLAIN, List.of());
+        List<String> htmlParts = parts.bodies.getOrDefault(HTML, List.of());
+        List<String> ampParts = parts.bodies.getOrDefault(AMP, List.of());
+        String plain = String.join("\n\n", plainParts);
+        HtmlText html = convertHtmlParts(htmlParts);
+        HtmlText amp = convertHtmlParts(ampParts);
 
-        List<String> plainParts = bodies.getOrDefault("text/plain", List.of());
-        String plainText = String.join("\n\n", plainParts);
+        List<String> textForAnalysis = new ArrayList<>();
+        addAnalysisText(textForAnalysis, PLAIN, plain);
+        addAnalysisText(textForAnalysis, HTML, html.text());
+        addAnalysisText(textForAnalysis, AMP, amp.text());
 
-        List<String> htmlParts = bodies.getOrDefault("text/html", List.of());
-        String htmlText = String.join("\n\n", htmlParts);
-        String htmlTextConverted = convertHtmlParts(htmlParts);
-
-        List<String> ampHtmlParts = bodies.getOrDefault("text/x-amp-html", List.of());
-        String ampHtmlText = String.join("\n\n", ampHtmlParts);
-        String ampHtmlTextConverted = convertHtmlParts(ampHtmlParts);
-
-        List<String> textAnalysis = new ArrayList<>();
-        if (plainText !=null && !plainText.isBlank()) {
-            textAnalysis.add("[text/plain]: "+ "\n" + plainText);
+        Boolean hasLinks = null;
+        if (html.hasLinks() || amp.hasLinks() || WEB_LINK.matcher(plain).find()) {
+            hasLinks = true;
+        } else if (!parts.unreadableBody) {
+            hasLinks = false;
         }
-        if (htmlTextConverted != null && !htmlTextConverted.isBlank()) {
-            textAnalysis.add("[text/html]: " + "\n" + htmlTextConverted);
-        }
-        if (ampHtmlTextConverted != null && !ampHtmlTextConverted.isBlank()) {
-            textAnalysis.add("[text/x-amp-html]: " + "\n" + ampHtmlTextConverted);
-        }
-
-        String textForAnalysis = String.join("\n\n", textAnalysis);
-
-        EmailContent emailContent = new EmailContent(
-            plainText,
-            htmlText,
-            ampHtmlText,
-            textForAnalysis);
-
-        return emailContent;
+        Boolean hasAttachments = payload == null ? null : parts.hasAttachments;
+        return new EmailContent(plain, String.join("\n\n", htmlParts), String.join("\n\n", ampParts),
+            String.join("\n\n", textForAnalysis), new EmailIndicators(hasAttachments, hasLinks));
     }
+
+    private void collectBodies(MessagePart part, BodyParts result) {
+        if (part == null) {
+            result.unreadableBody = true;
+            return;
+        }
+
+        String mimeType = part.getMimeType() == null ? "" : part.getMimeType().toLowerCase(Locale.ROOT);
+        boolean bodyType = PLAIN.equals(mimeType) || HTML.equals(mimeType) || AMP.equals(mimeType);
+        MessagePartBody body = part.getBody();
+        String disposition = header(part, "Content-Disposition").split(";", 2)[0].trim();
+        boolean external = body != null && hasValue(body.getAttachmentId());
+
+        if (hasValue(part.getFilename()) || "attachment".equalsIgnoreCase(disposition)
+                || (!bodyType && !mimeType.startsWith("multipart/") && (
+                    "inline".equalsIgnoreCase(disposition) || hasValue(header(part, "Content-ID")) || external))) {
+            result.hasAttachments = true;
+            return;
+        }
+
+        if (part.getParts() != null) {
+            for (MessagePart child : part.getParts()) {
+                collectBodies(child, result);
+            }
+        }
+        if (!bodyType) {
+            return;
+        }
+
+        if (body == null || body.getData() == null) {
+            // Gmail can put the textual body in a separate resource. Its contents are still unknown.
+            if (body == null || external || !Integer.valueOf(0).equals(body.getSize())) {
+                result.unreadableBody = true;
+            }
+            return;
+        }
+        if (body.getData().isEmpty() && (external || (body.getSize() != null && body.getSize() > 0))) {
+            result.unreadableBody = true;
+            return;
+        }
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(body.getData());
+            result.bodies.computeIfAbsent(mimeType, key -> new ArrayList<>())
+                .add(new String(decoded, StandardCharsets.UTF_8));
+        } catch (IllegalArgumentException invalidBase64) {
+            result.unreadableBody = true;
+        }
+    }
+
+    private static String header(MessagePart part, String name) {
+        if (part.getHeaders() != null) {
+            for (MessagePartHeader header : part.getHeaders()) {
+                if (header != null && name.equalsIgnoreCase(header.getName()) && header.getValue() != null) {
+                    return header.getValue();
+                }
+            }
+        }
+        return "";
+    }
+
+    private static boolean hasValue(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static HtmlText convertHtmlParts(List<String> parts) {
+        boolean hasLinks = false;
+        List<String> text = new ArrayList<>();
+        for (String part : parts) {
+            var document = Jsoup.parse(part);
+            hasLinks |= WEB_LINK.matcher(document.text()).find();
+            for (var link : document.select("a[href], area[href]")) {
+                String target = link.attr("href").strip();
+                hasLinks |= WEB_LINK.matcher(target).lookingAt();
+                if (!target.isEmpty() && link.normalName().equals("a")) {
+                    link.text(link.text() + ": " + link.attr("href"));
+                }
+            }
+            text.add(document.text());
+        }
+        return new HtmlText(String.join("\n\n", text), hasLinks);
+    }
+
+    private static void addAnalysisText(List<String> parts, String type, String text) {
+        if (!text.isBlank()) {
+            parts.add("[" + type + "]: \n" + text);
+        }
+    }
+
+    private static final class BodyParts {
+        private final Map<String, List<String>> bodies = new HashMap<>();
+        private boolean hasAttachments;
+        private boolean unreadableBody;
+    }
+
+    private record HtmlText(String text, boolean hasLinks) {}
 }

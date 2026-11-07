@@ -84,7 +84,8 @@ class EmailPageTest(APITestCase):
         self.assertIsNone(first.data["items"][-1]["received_at"])
         self.assertEqual(set(first.data["items"][0]), {
             "gmail_id", "thread_id", "sender", "subject", "received_at", "imported_at",
-            "processing_status", "effective_category",
+            "processing_status", "effective_category", "board_column", "update_revision",
+            "has_attachments", "has_links",
         })
         first_cursor = first.data["next_cursor"]
         self.assertTrue(first_cursor)

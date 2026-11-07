@@ -24,6 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 
 EMAIL_SYNC_ACCOUNT = os.environ.get("EMAIL_SYNC_ACCOUNT", "").strip().lower()
+EMAIL_APP_SERVICE_USERNAME = os.environ.get("EMAIL_APP_SERVICE_USERNAME", "").strip()
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True

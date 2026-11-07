@@ -1,6 +1,6 @@
 from django.urls import path
 from .sync_views import EmailSyncDetailView, EmailSyncView
-from .views import EmailChangesView, EmailListCreateView, EmailManualCategoryView, EmailPageView, EmailRetriaveDestroyView
+from .views import EmailBoardColumnView, EmailChangesView, EmailConversationView, EmailListCreateView, EmailManualCategoryView, EmailPageView, EmailRetriaveDestroyView, EmailTrashView
 
 
 urlpatterns = [
@@ -9,6 +9,9 @@ urlpatterns = [
     path('email-pages/', EmailPageView.as_view(), name='email-pages'),
     path('email-changes/', EmailChangesView.as_view(), name='email-changes'),
     path('emails/<str:pk>/manual-category/', EmailManualCategoryView.as_view(), name='email-manual-category'),
+    path('emails/<str:pk>/board-column/', EmailBoardColumnView.as_view(), name='email-board-column'),
+    path('emails/<str:pk>/conversation/', EmailConversationView.as_view(), name='email-conversation'),
+    path('emails/<str:pk>/trash/', EmailTrashView.as_view(), name='email-trash'),
 
     path('emails/',
         EmailListCreateView.as_view(),

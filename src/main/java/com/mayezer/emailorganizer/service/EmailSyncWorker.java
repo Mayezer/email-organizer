@@ -6,7 +6,7 @@ import java.sql.SQLException;
 import java.util.List;
 
 import com.mayezer.emailorganizer.model.Email;
-import com.mayezer.emailorganizer.model.EmailAnalysis;
+import com.mayezer.emailorganizer.model.EmailProcessingResult;
 import com.mayezer.emailorganizer.repository.EmailRepository;
 import com.mayezer.emailorganizer.repository.EmailSyncRepository;
 import com.mayezer.emailorganizer.repository.EmailSyncRepository.Lease;
@@ -30,7 +30,8 @@ public final class EmailSyncWorker {
         Page fetchPage(String pageToken, EmailRepository repository) throws IOException, SQLException;
         HistoryBatch fetchHistory(String historyId, String pageToken, int offset, EmailRepository repository)
             throws IOException, SQLException;
-        EmailAnalysis analyze(Email email, EmailRepository repository) throws IOException, SQLException;
+        boolean isTrashedOrMissing(String gmailId) throws IOException;
+        EmailProcessingResult analyze(Email email, EmailRepository repository) throws IOException, SQLException;
     }
 
     private final String account;
@@ -69,7 +70,7 @@ public final class EmailSyncWorker {
         if (pending == null) {
             jobs.complete(lease);
         } else {
-            EmailAnalysis result = null;
+            EmailProcessingResult result = null;
             try {
                 result = mailbox.analyze(pending, emails);
             } catch (IOException | RuntimeException exception) {
@@ -85,6 +86,11 @@ public final class EmailSyncWorker {
         // Read after claiming the lease so the checkpoint includes the preceding batch's commit.
         String historyId = jobs.historyId(account);
         var progress = lease.progress();
+        if (progress.pageToken() == null && progress.historyOffset() == 0 && progress.fullHistoryId() == null) {
+            for (var pending : emails.findPendingTrash(account, PAGE_SIZE)) {
+                emails.reconcileTrash(account, pending, mailbox.isTrashedOrMissing(pending.gmailId()));
+            }
+        }
         if (historyId != null) {
             HistoryBatch batch;
             try {
